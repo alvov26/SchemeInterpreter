@@ -49,19 +49,6 @@ Object* Cell::Eval(Environment* scope) {
     return As<Callable>(::Eval(first_, scope))->Call(second_, scope);
 }
 std::string Cell::ToString() const {
-    std::string result = "(";
-    auto iter = ListIterator<Object, ShouldEval::No>((Object*)this, nullptr);
-    for (auto it : iter) {
-        if (not iter.is_proper) {
-            result += ". ";
-        }
-        result += ::ToString(it);
-        result.push_back(' ');
-    }
-    if (result.size() > 1) {
-        result.pop_back();
-    }
-    result.push_back(')');
     return ArgList((Object*)this).ToString();
 }
 void Cell::SetFirst(Object* o) { first_ = o; }
@@ -71,12 +58,24 @@ void Cell::MarkDependencies() {
     Heap::Instance().Mark(second_);
 }
 
-BuiltInSyntax::BuiltInSyntax(std::function<Object*(Object*, Environment*)> value) : value_(value) {}
-Object* BuiltInSyntax::Call(Object* o, Environment* s){ return value_(o, s);}
+BuiltInSyntax::BuiltInSyntax(std::function<Object*(Object*, Environment*)> value) : value_(value){}
+
+Object* BuiltInSyntax::Call(Object* o, Environment* env) {
+    return value_(o, env);
+}
+
 Object* BuiltInSyntax::Eval(Environment*) {
     throw RuntimeError("Trying to evaluate a syntax keyword");
 }
 std::string BuiltInSyntax::ToString() const { return "BuiltInSyntax"; }
+
+Object* BuiltInSyntaxTailRecursive::Call(Object* o, Environment* s) {
+    return ::Eval(CallUntilTail(o, s), s);
+}
+
+Object* BuiltInSyntaxTailRecursive::CallUntilTail(Object* o, Environment* s) {
+    return BuiltInSyntax::Call(o, s);
+}
 
 Lambda::Lambda(std::vector<Symbol*> formals, Object* ast, Environment* parent_scope)
     : ast_(ast), formals_(formals), parent_scope_(parent_scope) {}
@@ -87,13 +86,35 @@ std::string Lambda::ToString() const {
     return "Lambda";
 }
 Object* Lambda::Call(Object* ast, Environment* scope) {
-    auto args = ArgList(ast).ExpectSize(formals_.size());
-    auto local_scope = Heap::Instance().Make<Environment>();
-    local_scope->SetParent(parent_scope_);
-    for (size_t i = 0; i < args.Size(); ++i) {
-        local_scope->NewDefinition(formals_[i]->GetName(), args.Eval(i, scope));
+    while (true) {
+        auto args = ArgList(ast).ExpectSize(formals_.size());
+        auto local_scope = Heap::Instance().Make<Environment>();
+        local_scope->SetParent(parent_scope_);
+        for (size_t i = 0; i < args.Size(); ++i) {
+            local_scope->NewDefinition(formals_[i]->GetName(), args.Eval(i, scope));
+        }
+        if (Is<Cell>(ast_)) {
+            auto c = As<Cell>(ast_);
+            auto cf = scope->GetDefinition(As<Symbol>(c->GetFirst())->GetName());
+            if (cf == this) {
+                ast = c->GetSecond();
+                continue;
+            }
+            if (Is<BuiltInSyntaxTailRecursive>(cf)) {
+                auto b = As<BuiltInSyntaxTailRecursive>(cf);
+                auto tail = b->CallUntilTail(c->GetSecond(), local_scope);
+                if (Is<Cell>(tail)) {
+                    auto t = As<Cell>(tail);
+                    if (local_scope->GetDefinition(As<Symbol>(t->GetFirst())->GetName()) == this) {
+                        ast = t->GetSecond();
+                        continue;
+                    }
+                }
+                return ::Eval(tail, local_scope);
+            }
+        }
+        return ::Eval(ast_, local_scope);
     }
-    return ::Eval(ast_, local_scope);
 }
 void Lambda::MarkDependencies() {
     Heap::Instance().Mark(ast_);
@@ -168,29 +189,32 @@ Environment* Environment::R5RS() {
         return BoolSymbol(not EvalToTrue(args[0]));
     });
 
-    names["and"] = h.Make<BuiltInSyntax>([](auto ast, auto scope){
+    names["and"] = h.Make<BuiltInSyntaxTailRecursive>([](auto ast, auto scope){
         auto args = ArgList(ast);
         if (args.Size() == 0) {
             return Symbol::True();
         }
-        for (size_t i = 0; i < args.Size(); ++i) {
+        for (size_t i = 0; i < args.Size()-1; ++i) {
             auto eval = args.Eval(i, scope);
             if (!EvalToTrue(eval)) {
                 return eval;
             }
         }
-        return args.Eval(args.Size()-1, scope);
+        return args.At(args.Size()-1);
     });
 
-    names["or"] = h.Make<BuiltInSyntax>([](auto ast, auto scope){
+    names["or"] = h.Make<BuiltInSyntaxTailRecursive>([](auto ast, auto scope){
         auto args = ArgList(ast);
-        for (size_t i = 0; i < args.Size(); ++i) {
+        if (args.Size() == 0) {
+            return Symbol::False();
+        }
+        for (size_t i = 0; i < args.Size()-1; ++i) {
             auto eval = args.Eval(i, scope);
             if (EvalToTrue(eval)) {
                 return eval;
             }
         }
-        return Symbol::False();
+        return args.At(args.Size()-1);
     });
 
     names["+"] = h.Make<BuiltInProc<Number>>([](auto& args) {
@@ -347,27 +371,31 @@ Environment* Environment::R5RS() {
         return list->GetSecond();
     });
 
-    names["if"] = h.Make<BuiltInSyntax>([](auto ast, auto scope) -> Object* {
+    names["if"] = h.Make<BuiltInSyntaxTailRecursive>([](auto ast, auto scope) -> Object* {
         auto args = ArgList(ast);
         if (args.Size() != 2 && args.Size() != 3) {
             throw SyntaxError("Wrong number of parameters");
         }
         auto cond = args.Eval(0, scope);
         if (EvalToTrue(cond)) {
-            return args.Eval(1, scope);
+            return args.At(1);
         }
         if (args.Size() == 3) {
-            return args.Eval(2, scope);
+            return args.At(2);
         }
-        return nullptr;
+        auto& h = Heap::Instance();
+        return h.Make<Cell>(
+            h.Make<Symbol>("quote"),
+            h.Make<Cell>(nullptr, nullptr)
+        );
     });
 
-    names["begin"] = h.Make<BuiltInSyntax>([](auto ast, auto scope){
+    names["begin"] = h.Make<BuiltInSyntaxTailRecursive>([](auto ast, auto scope){
         auto args = ArgList(ast).ExpectSizeAtLeast(1);
         for (size_t i = 0; i < args.Size()-1; ++i) {
             args.Eval(i, scope);
         }
-        return args.Eval(args.Size()-1, scope);
+        return args.At(args.Size()-1);
     });
 
     names["lambda"] = h.Make<BuiltInSyntax>([](auto ast, auto scope){

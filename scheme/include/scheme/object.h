@@ -5,10 +5,6 @@
 #include <memory>
 #include "error.h"
 
-enum class ShouldEval {
-    Yes, No
-};
-
 class Environment;
 
 class Object {
@@ -84,12 +80,19 @@ class BuiltInSyntax : public Callable {
     std::function<Object*(Object*, Environment*)> value_;
 
 public:
-    BuiltInSyntax(std::function<Object*(Object*, Environment*)> value);
+    explicit BuiltInSyntax(std::function<Object*(Object*, Environment*)> value);
     Object* Call(Object*, Environment*) override;
 
 protected:
     Object* Eval(Environment*) override;
     std::string ToString() const override;
+};
+
+class BuiltInSyntaxTailRecursive : public BuiltInSyntax {
+public:
+    using BuiltInSyntax::BuiltInSyntax;
+    Object* Call(Object*, Environment*) override;
+    Object* CallUntilTail(Object*, Environment*);
 };
 
 template <std::derived_from<Object> T = Object>
@@ -99,7 +102,7 @@ class BuiltInProc : public Callable {
 public:
     BuiltInProc(std::function<Object*(const std::vector<T*>&)> value) : value_(value) {}
     Object* Call(Object* o, Environment* s) override {
-        return value_(AsVector<T, ShouldEval::Yes>(o, s));
+        return value_(AsVector<T>(o, s));
     }
 
 protected:
@@ -175,111 +178,31 @@ bool Is(Object* obj) {
     return dynamic_cast<T*>(obj) != nullptr;
 }
 
-template <size_t N, std::derived_from<Object> T>
-inline void RequireSize(const std::vector<T*>& v) {
+template <size_t N, class T>
+void RequireSize(const std::vector<T*>& v) {
     if (v.size() != N) {
         throw RuntimeError("Invalid function call.");
     }
 }
 
-template <size_t N, std::derived_from<Object> T>
-inline void RequireSizeAtLeast(const std::vector<T*>& v) {
+template <size_t N, class T>
+void RequireSizeAtLeast(const std::vector<T*>& v) {
     if (v.size() < N) {
         throw RuntimeError("Invalid function call.");
     }
 }
 
-template <std::derived_from<Object> T = Object, ShouldEval shouldEval = ShouldEval::No>
-auto ListIterator(Object* args, Environment* env) {
-    struct Wrapper {
-        Object* start;
-        Environment* env;
-        bool is_proper = true;
-        auto begin() { return Iterator{ start, env, this }; } // NOLINT(*-identifier-naming)
-        auto end() { return Iterator{ nullptr, env, this }; } // NOLINT(*-identifier-naming)
-
-        struct Iterator {
-            Object* o;
-            Environment* env;
-            Wrapper* wrapper;
-            Iterator& operator++(){
-                if (Is<Cell>(o)) {
-                    o = As<Cell>(o)->GetSecond();
-                    if (o == nullptr) {
-                        wrapper->is_proper = false;
-                    }
-                } else {
-                    o = nullptr;
-                }
-                return *this;
-            }
-            bool operator!=(Iterator other) { return o != other.o; }
-            T* operator*() const {
-                if constexpr (shouldEval == ShouldEval::Yes) {
-                    if (Is<Cell>(o)) {
-                        return As<T>(::Eval(As<Cell>(o)->GetFirst(), env));
-                    }
-                    return As<T>(::Eval(o, env));
-                } else {
-                    if (Is<Cell>(o)) {
-                        return As<T>(As<Cell>(o)->GetFirst());
-                    }
-                    return As<T>(o);
-                }
-            }
-        };
-    };
-    return Wrapper{args, env};
-}
-
-template <std::derived_from<Object> T, ShouldEval shouldEval>
+template <std::derived_from<Object> T>
 std::vector<T*> AsVector(Object* o, Environment* env) {
     std::vector<T*> vec;
-    for (auto it : ListIterator<T, shouldEval>(o, env)) {
-        vec.push_back(it);
+    while (o != nullptr) {
+        if (Is<Cell>(o)) {
+            vec.push_back(As<T>(::Eval(As<Cell>(o)->GetFirst(), env)));
+            o = As<Cell>(o)->GetSecond();
+        } else {
+            vec.push_back(As<T>(::Eval(o, env)));
+            o = nullptr;
+        }
     }
     return vec;
-}
-
-template <std::derived_from<Object> T = Object, ShouldEval shouldEval = ShouldEval::No>
-auto ListIteratorF(Object* args, Environment* env) {
-    struct Wrapper {
-        Object* start;
-        Environment* env;
-        bool is_proper = true;
-        auto begin() { return Iterator{ start, env, this }; } // NOLINT(*-identifier-naming)
-        auto end() { return Iterator{ nullptr, env, this }; } // NOLINT(*-identifier-naming)
-
-        struct Iterator {
-            Object* o;
-            Environment* env;
-            Wrapper* wrapper;
-            Iterator& operator++(){
-                if (Is<Cell>(o)) {
-                    o = As<Cell>(o)->GetSecond();
-                    if (o == nullptr) {
-                        wrapper->is_proper = false;
-                    }
-                } else {
-                    o = nullptr;
-                }
-                return *this;
-            }
-            bool operator!=(Iterator other) { return o != other.o; }
-            T* operator*() const {
-                if constexpr (shouldEval == ShouldEval::Yes) {
-                    if (Is<Cell>(o)) {
-                        return As<T>(::Eval(As<Cell>(o)->GetFirst(), env));
-                    }
-                    return As<T>(::Eval(o, env));
-                } else {
-                    if (Is<Cell>(o)) {
-                        return As<T>(As<Cell>(o)->GetFirst());
-                    }
-                    return As<T>(o);
-                }
-            }
-        };
-    };
-    return Wrapper{args, env};
 }
