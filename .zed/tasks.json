@@ -1,0 +1,48 @@
+[
+  {
+    "label": "CMake configure Debug",
+    "command": "cmake",
+    "args": [
+      "-DCMAKE_BUILD_TYPE=Debug",
+      "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+      "-B",
+      "build/"
+    ],
+    "env": {},
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "CMake configure Relase",
+    "command": "cmake",
+    "args": [
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+      "-B",
+      "build/"
+    ],
+    "env": {},
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "CMake build",
+    "command": "cmake",
+    "args": ["--build", "build"],
+    "env": {},
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  },
+  {
+    "label": "Run Scheme REPL",
+    "command": "build/repl/repl",
+    "args": [],
+    "env": {},
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always"
+  }
+]

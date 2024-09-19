@@ -1,6 +1,7 @@
 #include <catch2/catch_all.hpp>
 
 #include <sstream>
+#include <random>
 
 #include <scheme/error.h>
 #include <scheme/parser.h>
